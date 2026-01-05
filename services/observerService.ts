@@ -1,13 +1,29 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 import { KnowledgeNode, Task, MindState } from "../types";
+
+const API_KEY = process.env.API_KEY;
 
 /**
  * Performs metacognitive analysis of the user's mind state based on Second Brain nodes and Tasks.
  * Uses gemini-3-pro-preview for advanced reasoning on cognitive patterns.
  */
 export const analyzeMindState = async (nodes: KnowledgeNode[], tasks: Task[]): Promise<MindState> => {
+  if (!API_KEY) {
+      // Offline / Manual Fallback
+      return {
+          clusters: [],
+          personality: "Manual Operator",
+          profileDescription: "You are operating in Manual Mode (Offline). AI analysis is disabled, but your graph and tasks are fully functional.",
+          blindSpots: ["AI Analysis Unavailable"],
+          nextBestAction: "Continue building your knowledge graph manually.",
+          interestMatrix: {},
+          lastAnalysisDate: Date.now()
+      };
+  }
+
   // Always create a new instance to ensure fresh API key usage
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const ai = new GoogleGenAI({ apiKey: API_KEY });
   
   try {
     if (nodes.length === 0) {

@@ -1,12 +1,11 @@
 
-
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, BookOpen, Bot, BrainCircuit, 
   Flame, Trophy, Plus, ArrowRight, Zap, Folder, 
   ChevronDown, ChevronRight, Sparkles, Network, Pencil, 
   Trash2, RotateCcw, Moon, Star, Check, X as XIcon, Clock, Calendar as CalIcon, List, Eye, EyeOff,
-  Download, Upload, Loader, Save, Inbox, FileText
+  Download, Upload, Loader, Save, Inbox, FileText, WifiOff
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import ReactMarkdown from 'react-markdown';
@@ -54,6 +53,8 @@ const App: React.FC = () => {
   const [isFlashcardFlipped, setIsFlashcardFlipped] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  
+  const isOfflineMode = !process.env.API_KEY;
 
   // --- INITIAL DATA LOAD (Async) ---
   useEffect(() => {
@@ -145,10 +146,15 @@ const App: React.FC = () => {
   const handleCapture = async (type: 'note' | 'task', content: string, extra?: any) => {
     if (type === 'note') {
         const title = extra?.title || "Quick Note " + new Date().toLocaleTimeString();
-        const analysis = { title: title, summary: content.substring(0, 100) + '...', tags: ['inbox'] };
         
-        // Generate embedding in background
-        const embedding = await generateEmbedding(content);
+        // Only run embedding if online
+        let analysis = { title: title, summary: content.substring(0, 100) + '...', tags: ['inbox'] };
+        let embedding = undefined;
+        
+        if (!isOfflineMode) {
+             embedding = await generateEmbedding(content);
+             // Could also run full analysis here, but let's keep quick capture quick
+        }
 
         const newNode: KnowledgeNode = {
           id: crypto.randomUUID(),
@@ -157,7 +163,7 @@ const App: React.FC = () => {
           summary: analysis.summary,
           tags: analysis.tags,
           content: content,
-          embedding: embedding, // Store vector
+          embedding: embedding, // Store vector (undefined if offline)
           lastAccessed: Date.now(),
           connections: 0
         };
@@ -313,7 +319,11 @@ const App: React.FC = () => {
                  setPaths(prev => [...prev, newPath]);
                  setExpandedPathIds(prev => new Set(prev).add(newPath.id));
                  setNodes(prev => prev.map(n => n.id === context.fromNodeId ? { ...n, type: 'path' } : n));
-                 alert(`Commitment "${inputValue}" generated with complete subtasks.`);
+                 if (!isOfflineMode) {
+                    alert(`Commitment "${inputValue}" generated with complete subtasks.`);
+                 } else {
+                    alert(`Commitment "${inputValue}" created (Manual Mode).`);
+                 }
                  setActiveTab('curriculum');
              } else {
                  alert("Failed to generate curriculum structure.");
@@ -609,6 +619,12 @@ const App: React.FC = () => {
           <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-lg shadow-indigo-600/20"><Bot className="text-white" size={20} /></div>
           <span className="font-bold text-xl hidden lg:block tracking-tight">Synthesis</span>
         </div>
+
+        {isOfflineMode && (
+             <div className="mx-6 mb-2 hidden lg:flex items-center gap-2 p-2 bg-red-500/10 border border-red-500/20 rounded-lg text-red-300 text-xs font-bold">
+                 <WifiOff size={14} /> Offline / Manual Mode
+             </div>
+        )}
         
         <div className="px-6 py-4 hidden lg:block">
             <button 
@@ -658,7 +674,10 @@ const App: React.FC = () => {
       <main className={`flex-1 ml-20 lg:ml-64 relative flex flex-col transition-all duration-300 ${activeTab === 'graph' ? 'h-screen overflow-hidden' : 'min-h-screen p-4 lg:p-8'}`}>
         {activeTab !== 'graph' && (
           <header className="flex justify-between items-center mb-8 sticky top-0 z-10 py-4 bg-[#0f172a]/80 backdrop-blur-md -mx-4 px-4 lg:-mx-8 lg:px-8 border-b border-white/5">
-            <h2 className="text-xl font-semibold capitalize text-white">{activeTab.replace('-', ' ')}</h2>
+            <div className="flex items-center gap-4">
+               <h2 className="text-xl font-semibold capitalize text-white">{activeTab.replace('-', ' ')}</h2>
+               {isOfflineMode && <div className="lg:hidden text-xs bg-red-500/10 text-red-300 px-2 py-1 rounded border border-red-500/20">Offline</div>}
+            </div>
             <PomodoroTimer activeTask={getActiveTask()} onSessionComplete={handleSessionComplete} />
           </header>
         )}
@@ -932,8 +951,8 @@ const App: React.FC = () => {
                       <div ref={chatEndRef} />
                   </div>
                   <div className="p-6 bg-slate-900/50 border-t border-white/10 flex gap-4">
-                      <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} className="flex-1 bg-slate-800 border-none rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-500 transition-all outline-none" placeholder="Ask your AI Architect..." />
-                      <button onClick={() => handleSendMessage()} className="bg-indigo-600 hover:bg-indigo-500 p-4 rounded-2xl transition-all shadow-lg shadow-indigo-600/20"><ArrowRight size={24} className="text-white" /></button>
+                      <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSendMessage()} className="flex-1 bg-slate-800 border-none rounded-2xl px-6 py-4 text-white focus:ring-2 focus:ring-indigo-500 transition-all outline-none" placeholder={isOfflineMode ? "Chat disabled (Offline)" : "Ask your AI Architect..."} disabled={isOfflineMode} />
+                      <button onClick={() => handleSendMessage()} disabled={isOfflineMode} className="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 disabled:text-slate-500 p-4 rounded-2xl transition-all shadow-lg shadow-indigo-600/20"><ArrowRight size={24} className="text-white" /></button>
                   </div>
               </div>
           )}

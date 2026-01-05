@@ -3,15 +3,18 @@ import { GoogleGenAI } from "@google/genai";
 import { KnowledgeNode } from "../types";
 
 const EMBEDDING_MODEL = "text-embedding-004";
+const API_KEY = process.env.API_KEY;
 
 /**
  * Generates a vector embedding for a given text string.
  */
 export const generateEmbedding = async (text: string): Promise<number[] | undefined> => {
+  if (!API_KEY) return undefined;
+
   try {
     if (!text || !text.trim()) return undefined;
     
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.embedContent({
       model: EMBEDDING_MODEL,
       contents: {

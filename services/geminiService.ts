@@ -2,6 +2,8 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { ChatMessage, MindState, KnowledgeNode, LearningPath } from "../types";
 
+const API_KEY = process.env.API_KEY;
+
 const getSystemInstruction = (mindState?: MindState, nodes: KnowledgeNode[] = [], paths: LearningPath[] = []) => {
   const nodeContext = nodes.map(n => `- Node: "${n.title}" (Tags: ${n.tags.join(', ')})`).join('\n');
   const pathContext = paths.map(p => {
@@ -113,8 +115,14 @@ export const streamChatResponse = async (
   nodes?: KnowledgeNode[],
   paths?: LearningPath[]
 ): Promise<string> => {
+  if (!API_KEY) {
+    const msg = "AI Unavailable (Offline Mode). Please configure a Gemini API Key to use the Architect.";
+    onChunk(msg);
+    return msg;
+  }
+
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const chat = ai.chats.create({
       model: 'gemini-3-pro-preview',
       config: { systemInstruction: getSystemInstruction(mindState, nodes, paths) },
@@ -133,7 +141,9 @@ export const streamChatResponse = async (
     return fullText;
   } catch (error) {
     console.error("Gemini API Error:", error);
-    return "Error connecting to AI.";
+    const err = "Error connecting to AI. Check your internet or API Key.";
+    onChunk(err);
+    return err;
   }
 };
 
@@ -151,8 +161,16 @@ export const extractJSONFromMarkdown = (text: string): any | null => {
 };
 
 export const analyzeContent = async (text: string): Promise<{ title: string; summary: string; tags: string[]; suggestions: string[] }> => {
+  if (!API_KEY) {
+      // Offline Fallback
+      const lines = text.split('\n').filter(l => l.trim().length > 0);
+      const title = lines[0]?.substring(0, 50) || "Untitled Note";
+      const summary = text.substring(0, 150) + "...";
+      return { title, summary, tags: ["manual"], suggestions: [] };
+  }
+
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const prompt = `Analyze: "${text.substring(0, 5000)}". Return JSON: { "title": "string", "summary": "string", "tags": ["string"], "suggestions": ["string"] }`;
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -172,8 +190,10 @@ export interface NodeExpansion {
 }
 
 export const expandNodeConcepts = async (topic: string, currentTags: string[]): Promise<NodeExpansion> => {
+  if (!API_KEY) return { subTopics: [], books: [], videos: [] };
+
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const prompt = `
       Topic: "${topic}"
       Context Tags: [${currentTags.join(', ')}]
@@ -194,8 +214,35 @@ export const expandNodeConcepts = async (topic: string, currentTags: string[]): 
  * Generates a full recursive curriculum from a single topic title.
  */
 export const generateLearningPathFromTopic = async (topic: string, context?: string): Promise<any> => {
+    if (!API_KEY) {
+        // Offline Fallback
+        return {
+             type: "learning_path",
+             title: topic,
+             description: "Manual Mode Path (AI Unavailable)",
+             tasks: [
+                 {
+                     title: "Step 1: Research",
+                     priority: "High",
+                     intent: "Study",
+                     estimatedTime: "30m",
+                     xpValue: 10,
+                     subtasks: []
+                 },
+                 {
+                     title: "Step 2: Practice",
+                     priority: "Medium",
+                     intent: "Action",
+                     estimatedTime: "30m",
+                     xpValue: 10,
+                     subtasks: []
+                 }
+             ]
+        };
+    }
+
     try {
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const ai = new GoogleGenAI({ apiKey: API_KEY });
         const prompt = `
             Create a detailed, recursive learning path for: "${topic}".
             ${context ? `Context: ${context}` : ''}
