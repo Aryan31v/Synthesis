@@ -7,8 +7,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     define: {
       'process.env.API_KEY': JSON.stringify(env.API_KEY),
-      // Prevent libraries from crashing when accessing process.env.NODE_ENV or similar
-      'process.env': JSON.stringify(process.env) 
+      // Use an empty object fallback for process.env to prevent crashes in libraries that check for it
+      // but do NOT leak the entire system environment
+      'process.env': {} 
     },
     build: {
       outDir: 'dist',
