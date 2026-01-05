@@ -1,8 +1,4 @@
-import * as pdfjsLib from 'pdfjs-dist';
 import JSZip from 'jszip';
-
-// Initialize PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
 
 export const extractTextFromFile = async (file: File): Promise<string> => {
   const type = file.type;
@@ -20,6 +16,12 @@ export const extractTextFromFile = async (file: File): Promise<string> => {
 };
 
 const extractTextFromPDF = async (file: File): Promise<string> => {
+  // Dynamically import PDF.js only when needed to prevent app-load crashes
+  const pdfjsLib = await import('pdfjs-dist');
+  
+  // Set worker source dynamically
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://esm.sh/pdfjs-dist@4.0.379/build/pdf.worker.min.mjs';
+
   const arrayBuffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
   let fullText = '';

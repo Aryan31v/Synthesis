@@ -6,10 +6,13 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     define: {
-      'process.env.API_KEY': JSON.stringify(env.API_KEY)
+      'process.env.API_KEY': JSON.stringify(env.API_KEY),
+      // Prevent libraries from crashing when accessing process.env.NODE_ENV or similar
+      'process.env': JSON.stringify(process.env) 
     },
     build: {
       outDir: 'dist',
+      target: 'esnext' // Critical for libraries using Top-Level Await
     },
     server: {
       port: 3000
