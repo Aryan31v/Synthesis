@@ -1,4 +1,5 @@
 
+
 export type CognitiveIntent = 'Action' | 'Study' | 'Build' | 'Think';
 
 export interface InterestCluster {
@@ -81,6 +82,7 @@ export interface KnowledgeNode {
   summary?: string;
   tags: string[];
   content?: string;
+  embedding?: number[]; // Vector embedding for semantic search
   lastAccessed?: number; // For Staleness
   connections?: number; // For Density
   

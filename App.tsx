@@ -1,10 +1,12 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   LayoutDashboard, BookOpen, Bot, BrainCircuit, 
   Flame, Trophy, Plus, ArrowRight, Zap, Folder, 
   ChevronDown, ChevronRight, Sparkles, Network, Pencil, 
-  Trash2, RotateCcw, Moon, Star, Check, X as XIcon, Clock, Calendar as CalIcon, List, Eye, EyeOff
+  Trash2, RotateCcw, Moon, Star, Check, X as XIcon, Clock, Calendar as CalIcon, List, Eye, EyeOff,
+  Download, Upload, Loader, Save, Inbox, FileText
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import ReactMarkdown from 'react-markdown';
@@ -14,18 +16,24 @@ import * as Storage from './services/storageService';
 import * as SRS from './services/srsService';
 import { streamChatResponse, extractJSONFromMarkdown, analyzeContent, generateLearningPathFromTopic } from './services/geminiService';
 import { analyzeMindState } from './services/observerService';
+import { generateEmbedding } from './services/embeddingService';
 
 import { TaskItem } from './components/TaskItem';
 import { PomodoroTimer } from './components/PomodoroTimer';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { ActionModal } from './components/ActionModal';
 import { CalendarView } from './components/CalendarView';
+import { CaptureModal } from './components/CaptureModal';
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [profile, setProfile] = useState<UserProfile>(Storage.loadProfile());
-  const [paths, setPaths] = useState<LearningPath[]>(Storage.loadPaths());
-  const [nodes, setNodes] = useState<KnowledgeNode[]>(Storage.loadNodes());
+  
+  // Data State - Initialize with defaults but flag as loading
+  const [profile, setProfile] = useState<UserProfile>(Storage.INITIAL_PROFILE);
+  const [paths, setPaths] = useState<LearningPath[]>([]);
+  const [nodes, setNodes] = useState<KnowledgeNode[]>([]);
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+
   const [focusedTaskId, setFocusedTaskId] = useState<string | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([
     { id: 'welcome', role: 'model', content: "Greetings, Architect. I am your cognitive partner. Let's map your intellectual world." }
@@ -33,21 +41,157 @@ const App: React.FC = () => {
   const [isChatStreaming, setIsChatStreaming] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const [expandedPathIds, setExpandedPathIds] = useState<Set<string>>(new Set(paths.length > 0 ? [paths[0].id] : []));
+  const [expandedPathIds, setExpandedPathIds] = useState<Set<string>>(new Set());
   const [activeModal, setActiveModal] = useState<any>({ isOpen: false, type: 'input', action: 'add_subtask', title: '', context: {} });
   const [isGeneratingPath, setIsGeneratingPath] = useState(false);
+  const [isCaptureOpen, setIsCaptureOpen] = useState(false);
   
-  // Explanation Context - tracks which task we are currently "explaining"
+  // Explanation Context
   const [explainTarget, setExplainTarget] = useState<{pathId: string, taskId: string} | null>(null);
 
-  // Review Mode State (SRS or Calendar)
+  // Review Mode State
   const [reviewMode, setReviewMode] = useState<'srs' | 'calendar'>('srs');
   const [isFlashcardFlipped, setIsFlashcardFlipped] = useState(false);
 
-  useEffect(() => { Storage.saveProfile(profile); }, [profile]);
-  useEffect(() => { Storage.savePaths(paths); }, [paths]);
-  useEffect(() => { Storage.saveNodes(nodes); }, [nodes]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // --- INITIAL DATA LOAD (Async) ---
+  useEffect(() => {
+    const initData = async () => {
+      try {
+        const [loadedProfile, loadedPaths, loadedNodes] = await Promise.all([
+          Storage.loadProfile(),
+          Storage.loadPaths(),
+          Storage.loadNodes()
+        ]);
+        
+        setProfile(loadedProfile);
+        setPaths(loadedPaths);
+        setNodes(loadedNodes);
+        
+        // Auto expand inbox if tasks exist, or intro path
+        if (loadedPaths.length > 0) {
+            const inbox = loadedPaths.find(p => p.id === 'inbox-path');
+            if (inbox && inbox.tasks.length > 0) {
+                setExpandedPathIds(new Set(['inbox-path']));
+            } else if (loadedPaths.length > 1) {
+                setExpandedPathIds(new Set([loadedPaths[1].id]));
+            }
+        }
+        
+        setIsDataLoaded(true);
+      } catch (e) {
+        console.error("Failed to load data", e);
+        setIsDataLoaded(true); // Allow app to load even on error (empty state)
+      }
+    };
+    initData();
+  }, []);
+
+  // --- SAVE SIDE EFFECTS ---
+  useEffect(() => { if (isDataLoaded) Storage.saveProfile(profile); }, [profile, isDataLoaded]);
+  useEffect(() => { if (isDataLoaded) Storage.savePaths(paths); }, [paths, isDataLoaded]);
+  useEffect(() => { if (isDataLoaded) Storage.saveNodes(nodes); }, [nodes, isDataLoaded]);
+
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [chatHistory]);
+
+  // --- BACKUP & RESTORE HANDLERS ---
+  const handleExportBackup = async () => {
+    try {
+        const json = await Storage.exportBackup();
+        const blob = new Blob([json], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `synthesis_backup_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        alert("Backup failed. See console.");
+        console.error(e);
+    }
+  };
+
+  const handleImportBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      if (!confirm("Warning: Restoring a backup will overwrite ALL current data. Continue?")) {
+          e.target.value = ''; // Reset
+          return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+          try {
+              const json = evt.target?.result as string;
+              const success = await Storage.importBackup(json);
+              if (success) {
+                  alert("Restore successful! Reloading application...");
+                  window.location.reload();
+              } else {
+                  alert("Restore failed. Invalid format.");
+              }
+          } catch (err) {
+              alert("Error processing file.");
+          }
+      };
+      reader.readAsText(file);
+  };
+
+  // --- LOGIC HANDLERS ---
+  const handleCapture = async (type: 'note' | 'task', content: string, extra?: any) => {
+    if (type === 'note') {
+        const title = extra?.title || "Quick Note " + new Date().toLocaleTimeString();
+        const analysis = { title: title, summary: content.substring(0, 100) + '...', tags: ['inbox'] };
+        
+        // Generate embedding in background
+        const embedding = await generateEmbedding(content);
+
+        const newNode: KnowledgeNode = {
+          id: crypto.randomUUID(),
+          type: 'note',
+          title: analysis.title,
+          summary: analysis.summary,
+          tags: analysis.tags,
+          content: content,
+          embedding: embedding, // Store vector
+          lastAccessed: Date.now(),
+          connections: 0
+        };
+        setNodes(prev => [...prev, newNode]);
+    } else {
+        // Add to Inbox Path
+        const newTask: Task = {
+            id: crypto.randomUUID(),
+            title: content,
+            completed: false,
+            subtasks: [],
+            priority: extra?.priority || 'Medium',
+            intent: 'Action',
+            sessionsCompleted: 0,
+            estimatedSessions: 1,
+            totalFocusMinutes: 0,
+            xpValue: 10,
+            reviewDate: null,
+            interval: 0,
+            easeFactor: 2.5,
+            repetitions: 0
+        };
+        
+        // Ensure inbox path exists, if not create it (should exist from loadPaths though)
+        setPaths(prev => {
+            const hasInbox = prev.some(p => p.id === 'inbox-path');
+            if (hasInbox) {
+                return prev.map(p => p.id === 'inbox-path' ? { ...p, tasks: [newTask, ...p.tasks] } : p);
+            } else {
+                return [{ id: 'inbox-path', title: 'Inbox', createdAt: Date.now(), tasks: [newTask] }, ...prev];
+            }
+        });
+    }
+  };
 
   const handleMindAnalysis = async () => {
     try {
@@ -65,6 +209,8 @@ const App: React.FC = () => {
   const handleAddKnowledge = async (text: string) => {
     try {
       const analysis = await analyzeContent(text);
+      const embedding = await generateEmbedding(text);
+      
       const newNode: KnowledgeNode = {
         id: crypto.randomUUID(),
         type: 'note',
@@ -72,6 +218,7 @@ const App: React.FC = () => {
         summary: analysis.summary,
         tags: analysis.tags,
         content: text,
+        embedding: embedding,
         lastAccessed: Date.now(),
         connections: 0
       };
@@ -142,7 +289,7 @@ const App: React.FC = () => {
           if (context.fromNodeId) {
              // AUTO-GENERATE FROM NODE
              setIsGeneratingPath(true);
-             setActiveModal({ ...activeModal, isOpen: false }); // Close modal early to show loading state if desired, or handle elsewhere
+             setActiveModal({ ...activeModal, isOpen: false }); 
              
              // Recursively enrich tasks with IDs
              const enrichTasks = (rawTasks: any[]): Task[] => rawTasks.map(t => ({
@@ -227,17 +374,21 @@ const App: React.FC = () => {
             if (json) {
                 // Handle "new_note" type (from explanation)
                 if (json.type === "new_note") {
-                     const newNode: KnowledgeNode = {
-                        id: crypto.randomUUID(),
-                        type: 'note',
-                        title: json.title,
-                        summary: json.summary || "Auto-generated from chat",
-                        tags: json.tags || [],
-                        content: json.content,
-                        lastAccessed: Date.now(),
-                        connections: 0
-                     };
-                     setNodes(prev => [...prev, newNode]);
+                     // Fire and forget embedding generation
+                     generateEmbedding(json.content).then(embedding => {
+                        const newNode: KnowledgeNode = {
+                            id: crypto.randomUUID(),
+                            type: 'note',
+                            title: json.title,
+                            summary: json.summary || "Auto-generated from chat",
+                            tags: json.tags || [],
+                            content: json.content,
+                            embedding: embedding,
+                            lastAccessed: Date.now(),
+                            connections: 0
+                        };
+                        setNodes(prev => [...prev, newNode]);
+                     });
                 }
                 // Handle "learning_path" type
                 else if (json.type === "learning_path" || json.tasks) {
@@ -284,10 +435,37 @@ const App: React.FC = () => {
                         };
                     }));
                     
-                    // Clear the target so future generic messages don't accidentally append
                     setExplainTarget(null);
+                }
+                // Handle "add_task" type (simple todo)
+                else if (json.type === "add_task") {
+                    const newTask: Task = {
+                        id: crypto.randomUUID(),
+                        title: json.title,
+                        completed: false,
+                        subtasks: [],
+                        priority: json.priority || 'Medium',
+                        intent: json.intent || 'Action',
+                        isFolder: false,
+                        sessionsCompleted: 0,
+                        estimatedSessions: 1,
+                        totalFocusMinutes: 0,
+                        xpValue: 10,
+                        reviewDate: null,
+                        interval: 0,
+                        easeFactor: 2.5,
+                        repetitions: 0
+                    };
                     
-                    // Optional: You could insert a system message saying "Steps added to task."
+                    setPaths(prev => {
+                        const hasInbox = prev.some(p => p.id === 'inbox-path');
+                        if (hasInbox) {
+                            return prev.map(p => p.id === 'inbox-path' ? { ...p, tasks: [newTask, ...p.tasks] } : p);
+                        } else {
+                            return [{ id: 'inbox-path', title: 'Inbox', createdAt: Date.now(), tasks: [newTask] }, ...prev];
+                        }
+                    });
+                    setExpandedPathIds(prev => new Set(prev).add('inbox-path'));
                 }
             }
         }
@@ -365,6 +543,10 @@ const App: React.FC = () => {
   
   const allTasks = paths.flatMap(p => flattenTasks(p.tasks));
   const dueTasksSRS = allTasks.filter(t => t.reviewDate !== null && t.reviewDate <= Date.now() && !t.isFolder);
+  
+  // Stats Calculation
+  const inboxTasksCount = paths.find(p => p.id === 'inbox-path')?.tasks.filter(t => !t.completed).length || 0;
+  const inboxNotesCount = nodes.filter(n => n.tags.includes('inbox')).length;
 
   // SRS Logic
   const handleSRSGrade = (taskId: string, quality: number) => {
@@ -394,18 +576,27 @@ const App: React.FC = () => {
               })
           };
       }));
-      // Reset flip state for next card
       setIsFlashcardFlipped(false);
   };
 
-  // Ensure flip state resets when there are no tasks or task changes implicitly
   useEffect(() => {
      if (dueTasksSRS.length === 0) setIsFlashcardFlipped(false);
   }, [dueTasksSRS.length]);
 
+  if (!isDataLoaded) {
+      return (
+          <div className="min-h-screen bg-[#0f172a] text-white flex flex-col items-center justify-center gap-4">
+              <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+              <p className="animate-pulse text-indigo-300">Loading Synthesis...</p>
+          </div>
+      );
+  }
+
   return (
     <div className="min-h-screen bg-[#0f172a] text-slate-200 flex font-sans selection:bg-indigo-500/30">
       <ActionModal {...activeModal} onConfirm={handleModalConfirm} onClose={() => setActiveModal({ ...activeModal, isOpen: false })} />
+      <CaptureModal isOpen={isCaptureOpen} onClose={() => setIsCaptureOpen(false)} onCapture={handleCapture} />
+      
       {isGeneratingPath && (
           <div className="fixed inset-0 z-[110] bg-black/70 backdrop-blur-sm flex items-center justify-center flex-col gap-4">
               <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-indigo-500"></div>
@@ -420,6 +611,13 @@ const App: React.FC = () => {
         </div>
         
         <div className="px-6 py-4 hidden lg:block">
+            <button 
+                onClick={() => setIsCaptureOpen(true)}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 transition-all mb-4"
+            >
+                <Plus size={20} /> Quick Capture
+            </button>
+
             <div className="bg-white/5 rounded-xl p-4 border border-white/5">
                 <div className="flex justify-between items-center mb-2">
                     <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Level {profile.level}</span>
@@ -448,6 +646,14 @@ const App: React.FC = () => {
           ))}
         </nav>
       </aside>
+      
+      {/* Mobile Floating Action Button */}
+      <button 
+        onClick={() => setIsCaptureOpen(true)}
+        className="fixed bottom-20 right-4 lg:hidden z-50 w-14 h-14 bg-indigo-600 rounded-full shadow-2xl flex items-center justify-center text-white border-2 border-white/10"
+      >
+          <Plus size={28} />
+      </button>
 
       <main className={`flex-1 ml-20 lg:ml-64 relative flex flex-col transition-all duration-300 ${activeTab === 'graph' ? 'h-screen overflow-hidden' : 'min-h-screen p-4 lg:p-8'}`}>
         {activeTab !== 'graph' && (
@@ -466,6 +672,68 @@ const App: React.FC = () => {
                       <p className="opacity-70 text-lg max-w-2xl leading-relaxed">{profile.mindState?.profileDescription || "Use the Brain Map tab to trigger the Metacognitive Observer."}</p>
                       <button onClick={() => setActiveTab('graph')} className="mt-6 flex items-center gap-2 px-5 py-2.5 bg-white/20 hover:bg-white/30 rounded-xl font-bold transition-all backdrop-blur-sm"><Sparkles size={18}/> Analyze MindState</button>
                   </div>
+                  
+                  {/* Inbox Zero Status */}
+                  {(inboxTasksCount > 0 || inboxNotesCount > 0) && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                           <div 
+                                onClick={() => { setActiveTab('curriculum'); setExpandedPathIds(new Set(['inbox-path'])); }}
+                                className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2rem] p-6 cursor-pointer transition-all flex items-center gap-6"
+                           >
+                               <div className="w-16 h-16 rounded-2xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                                   <Inbox size={32} />
+                               </div>
+                               <div>
+                                   <div className="text-3xl font-black text-white">{inboxTasksCount}</div>
+                                   <div className="text-sm text-slate-400 font-medium">Unprocessed Inbox Tasks</div>
+                               </div>
+                           </div>
+                           <div 
+                                onClick={() => setActiveTab('graph')}
+                                className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-[2rem] p-6 cursor-pointer transition-all flex items-center gap-6"
+                           >
+                               <div className="w-16 h-16 rounded-2xl bg-teal-500/20 text-teal-400 flex items-center justify-center">
+                                   <FileText size={32} />
+                               </div>
+                               <div>
+                                   <div className="text-3xl font-black text-white">{inboxNotesCount}</div>
+                                   <div className="text-sm text-slate-400 font-medium">Captured Notes (#inbox)</div>
+                               </div>
+                           </div>
+                      </div>
+                  )}
+                  
+                  {/* Data Management Section */}
+                  <div className="bg-white/5 border border-white/10 rounded-[2.5rem] p-8">
+                      <h3 className="text-xl font-bold mb-4 flex items-center gap-2"><Save size={20} className="text-emerald-400"/> Data Management</h3>
+                      <div className="flex gap-4">
+                          <button 
+                             onClick={handleExportBackup}
+                             className="flex items-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-500 rounded-xl font-bold transition-all text-sm shadow-lg shadow-indigo-600/20"
+                          >
+                              <Download size={18}/> Download Backup (JSON)
+                          </button>
+                          <div className="relative">
+                              <button 
+                                 onClick={() => fileInputRef.current?.click()}
+                                 className="flex items-center gap-2 px-6 py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl font-bold transition-all text-sm text-slate-300 hover:text-white"
+                              >
+                                  <Upload size={18}/> Restore Backup
+                              </button>
+                              <input 
+                                ref={fileInputRef}
+                                type="file" 
+                                accept=".json" 
+                                onChange={handleImportBackup} 
+                                className="hidden" 
+                              />
+                          </div>
+                      </div>
+                      <p className="mt-4 text-xs text-slate-500">
+                          Your data is stored locally in your browser's IndexedDB. Download a backup regularly to prevent data loss.
+                      </p>
+                  </div>
+
                   {profile.mindState && (
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                           <div className="md:col-span-2 bg-white/5 p-8 rounded-[2.5rem] border border-white/10 shadow-xl flex flex-col">

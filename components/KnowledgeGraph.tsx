@@ -1,8 +1,11 @@
+
+
 import React, { useEffect, useRef, useState, useMemo } from 'react';
 import { KnowledgeNode, MindState, ChatMessage, LearningPath } from '../types';
-import { ZoomIn, ZoomOut, Maximize, BrainCircuit, X, Folder, FileText, PlusCircle, Trash2, Sparkles, Plus, Upload, Loader, Network, Info, BookOpen, MonitorPlay, ExternalLink, Save, MessageSquare, Send, Minimize2, Bot, Waypoints, MapPin } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize, BrainCircuit, X, Folder, FileText, PlusCircle, Trash2, Sparkles, Plus, Upload, Loader, Network, Info, BookOpen, MonitorPlay, ExternalLink, Save, MessageSquare, Send, Minimize2, Bot, Waypoints, MapPin, Layers } from 'lucide-react';
 import { analyzeContent, expandNodeConcepts, NodeExpansion, streamChatResponse, extractJSONFromMarkdown } from '../services/geminiService';
 import { extractTextFromFile } from '../services/fileProcessingService';
+import { generateEmbedding, cosineSimilarity } from '../services/embeddingService';
 import ReactMarkdown from 'react-markdown';
 
 interface KnowledgeGraphProps {
@@ -23,6 +26,7 @@ interface GraphLink {
   target: string;
   weight: number;
   sharedTerms: string[];
+  type: 'tag' | 'semantic';
 }
 
 export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ 
@@ -49,6 +53,7 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [isAddPanelOpen, setIsAddPanelOpen] = useState(false);
+  const [isBackfilling, setIsBackfilling] = useState(false);
   const [inputText, setInputText] = useState('');
   
   // Content Editing State
@@ -101,28 +106,52 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
         const n1 = nodes[i];
         const n2 = nodes[j];
         
-        // Base connection on Tags
+        let linkType: 'tag' | 'semantic' | null = null;
+        let weight = 0;
+        let sharedTerms: string[] = [];
+
+        // 1. Explicit / Tag Connection
         const hasTagConnection = n1.tags.some(t => n2.tags.includes(t));
         
         if (hasTagConnection) {
             const terms1 = getTerms(n1);
             const terms2 = getTerms(n2);
             const shared = terms1.filter(t => terms2.includes(t));
-            const uniqueShared = [...new Set(shared)]; // dedup
+            sharedTerms = [...new Set(shared)].slice(0, 3);
             
-            // Weight 1 (base) to 5 (strong)
-            // 1 match = weight 2, 3+ matches = weight 3-5
-            let weight = 1 + Math.min(4, uniqueShared.length);
+            weight = 1 + Math.min(4, sharedTerms.length);
             
-            // Boost weight if they share a direct parent/child naming convention or exact tag match count is high
+            // Boost
             const sharedTags = n1.tags.filter(t => n2.tags.includes(t));
             if (sharedTags.length > 2) weight = Math.min(5, weight + 1);
+            
+            linkType = 'tag';
+        }
 
+        // 2. Semantic Connection (Vector Search)
+        // Only calculate if no strong tag connection exists or to boost it
+        if (n1.embedding && n2.embedding) {
+            const similarity = cosineSimilarity(n1.embedding, n2.embedding);
+            // Threshold for semantic link: 0.8
+            if (similarity > 0.8) {
+                if (!linkType) {
+                    linkType = 'semantic';
+                    weight = 1 + ((similarity - 0.8) * 20); // Scale 0.8-1.0 to weight 1-5 roughly
+                    sharedTerms = ['Semantic Match'];
+                } else {
+                    // Boost existing tag link
+                    weight = Math.min(5, weight + 1);
+                }
+            }
+        }
+
+        if (linkType && weight > 0) {
             calculatedLinks.push({
                 source: n1.id,
                 target: n2.id,
                 weight,
-                sharedTerms: uniqueShared.slice(0, 3) // Keep top 3 for display
+                sharedTerms,
+                type: linkType
             });
         }
       }
@@ -173,6 +202,36 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
           alert("No connection found between these nodes.");
           setIsTracingMode(false);
       }
+  };
+
+  // Backfill Embeddings for existing nodes
+  const handleBackfillEmbeddings = async () => {
+      const nodesToFill = nodes.filter(n => !n.embedding);
+      if (nodesToFill.length === 0) {
+          alert("All nodes already vectorized.");
+          return;
+      }
+      
+      if (!confirm(`Generate vectors for ${nodesToFill.length} nodes? This will use your API quota.`)) return;
+      
+      setIsBackfilling(true);
+      let count = 0;
+      
+      // Process sequentially to avoid rate limits (safe bet)
+      for (const node of nodesToFill) {
+          try {
+              const embedding = await generateEmbedding(node.content || node.title);
+              if (embedding) {
+                  onUpdateNode(node.id, { embedding });
+                  count++;
+              }
+          } catch (e) {
+              console.error(e);
+          }
+      }
+      
+      setIsBackfilling(false);
+      alert(`Successfully vectorized ${count} nodes. Semantic connections will now appear.`);
   };
 
   useEffect(() => { setNodes(initialNodes); }, [initialNodes]);
@@ -404,6 +463,10 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
           let width = link.weight * 0.5;
           let color = `hsl(${180 + link.weight * 20}, 70%, 70%)`; // Teal to Blue gradient
           
+          if (link.type === 'semantic') {
+             color = '#f472b6'; // Pink for semantic connections
+          }
+
           const isPathLink = activePath.length > 1 && 
             ((activePath.includes(n1.id) && activePath.includes(n2.id) && 
               Math.abs(activePath.indexOf(n1.id) - activePath.indexOf(n2.id)) === 1));
@@ -422,7 +485,7 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
                if (isFocusLink) {
                    opacity = 0.8;
                    width = 2;
-                   color = '#a5b4fc';
+                   color = link.type === 'semantic' ? '#f472b6' : '#a5b4fc';
                } else {
                    opacity = 0.05;
                }
@@ -432,10 +495,15 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
           ctx.strokeStyle = color;
           ctx.globalAlpha = opacity;
           ctx.lineWidth = width / zoom;
+          // Dashed line for semantic links
+          if (link.type === 'semantic') ctx.setLineDash([5, 5]);
+          else ctx.setLineDash([]);
+          
           ctx.moveTo(n1.x || 0, n1.y || 0);
           ctx.lineTo(n2.x || 0, n2.y || 0);
           ctx.stroke();
           ctx.globalAlpha = 1;
+          ctx.setLineDash([]);
       });
 
       // Draw Nodes
@@ -723,6 +791,16 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
                 <button onClick={() => setIsAddPanelOpen(!isAddPanelOpen)} className={`p-2.5 rounded-lg border transition-all ${isAddPanelOpen ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#1e293b]/90 border-white/10 text-slate-400 hover:text-white shadow-xl'}`}><Plus size={18} /></button>
                 <button onClick={async () => { setIsAnalyzing(true); await onAnalyzeMind().finally(() => setIsAnalyzing(false)); }} disabled={isAnalyzing || nodes.length === 0} className={`p-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg transition-all ${isAnalyzing ? 'animate-pulse opacity-50' : ''} ${nodes.length === 0 ? 'opacity-30 cursor-not-allowed' : ''}`}><BrainCircuit size={18} /></button>
                 <button onClick={() => setShowChat(!showChat)} className={`p-2.5 rounded-lg border transition-all ${showChat ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#1e293b]/90 border-white/10 text-slate-400 hover:text-white shadow-xl'}`}><MessageSquare size={18} /></button>
+                
+                {/* Backfill Embeddings */}
+                <button 
+                    onClick={handleBackfillEmbeddings} 
+                    disabled={isBackfilling}
+                    title="Generate Embeddings for Semantic Links"
+                    className={`p-2.5 rounded-lg border transition-all ${isBackfilling ? 'bg-indigo-900 border-indigo-500 text-indigo-300' : 'bg-[#1e293b]/90 border-white/10 text-slate-400 hover:text-white shadow-xl'}`}
+                >
+                    {isBackfilling ? <Loader size={18} className="animate-spin" /> : <Layers size={18} />}
+                </button>
             </div>
          </div>
       </div>
@@ -745,8 +823,10 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
                  top: interactionState.current.lastMousePos.y + 15 
              }}
           >
-              <div className="font-bold text-indigo-300 mb-1">Connection Strength: {hoveredLink.weight}/5</div>
-              <div className="opacity-70">Shared: {hoveredLink.sharedTerms.join(', ') || 'Tags'}</div>
+              <div className={`font-bold mb-1 ${hoveredLink.type === 'semantic' ? 'text-pink-400' : 'text-indigo-300'}`}>
+                  {hoveredLink.type === 'semantic' ? 'Semantic Match' : 'Tag Match'} ({hoveredLink.weight}/5)
+              </div>
+              <div className="opacity-70">Shared: {hoveredLink.sharedTerms.join(', ')}</div>
           </div>
       )}
 
@@ -844,6 +924,16 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
                      #{tag} {mindState?.interestMatrix?.[tag] ? `(${Math.round(mindState.interestMatrix[tag] * 100)}%)` : ''}
                    </span>
                  ))}
+                 {/* Vector Indicator */}
+                 {selectedNode.embedding ? (
+                     <span className="text-[10px] bg-pink-500/10 border border-pink-500/20 px-2 py-0.5 rounded-full text-pink-300 flex items-center gap-1">
+                         <Layers size={10} /> Vectorized
+                     </span>
+                 ) : (
+                    <span className="text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded-full text-slate-500 italic">
+                        No Vector
+                    </span>
+                 )}
              </div>
              
              {/* Content Editor */}
@@ -865,7 +955,7 @@ export const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({
                      <textarea 
                         value={editedContent} 
                         onChange={(e) => setEditedContent(e.target.value)}
-                        className="w-full h-40 bg-[#0f172a] border border-indigo-500/30 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 custom-scrollbar resize-none font-mono leading-relaxed"
+                        className="w-full h-40 bg-[#0f172a] border border-indigo-500/30 rounded-lg p-3 text-xs text-slate-300 focus:outline-none focus:border-indigo-500 custom-scrollbar resize-none font-mono leading-relaxed"
                      />
                  ) : (
                      <div className="w-full max-h-40 overflow-y-auto bg-[#0f172a]/50 border border-white/5 rounded-lg p-3 text-xs text-slate-400 custom-scrollbar whitespace-pre-wrap leading-relaxed">

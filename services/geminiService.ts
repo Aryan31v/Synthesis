@@ -53,11 +53,53 @@ GOALS:
      }
      \`\`\`
 
-3. If the user asks for a Plan/Curriculum:
-   - Provide a JSON structure of the Learning Path at the end.
-   - If user asks for a schedule, suggest dates.
+3. If the user asks for a Plan, Curriculum, or says "I want to learn [Topic]":
+   - Briefly discuss the approach in text.
+   - **CRITICAL**: Append a JSON block with type "learning_path" containing a hierarchical list of tasks.
+   - JSON Format:
+     \`\`\`json
+     {
+       "type": "learning_path",
+       "title": "Mastering [Topic]",
+       "description": "A structured path to learn [Topic]",
+       "tasks": [
+         {
+           "title": "Phase 1: Foundations",
+           "priority": "High",
+           "intent": "Study", // Options: Action, Study, Build, Think
+           "estimatedTime": "2h",
+           "xpValue": 50,
+           "subtasks": [
+              { "title": "Read basic concepts", "priority": "Medium", "intent": "Study", "estimatedTime": "30m", "xpValue": 10 },
+              { "title": "Practice exercise", "intent": "Action", "estimatedTime": "45m", "xpValue": 20 }
+           ]
+         },
+         {
+            "title": "Phase 2: Application",
+            "priority": "High",
+            "intent": "Build",
+            "estimatedTime": "4h",
+            "xpValue": 100,
+            "subtasks": []
+         }
+       ]
+     }
+     \`\`\`
 
-4. General Rules:
+4. If the user asks to add a specific task, to-do, or reminder (e.g., "Add 'Buy Milk' to my list" or "Remind me to study"):
+   - Confirm the action in text.
+   - Append a JSON block with type "add_task".
+   - JSON Format:
+     \`\`\`json
+     {
+       "type": "add_task",
+       "title": "Task Title",
+       "priority": "Medium", // Options: Low, Medium, High, Critical
+       "intent": "Action" // Options: Action, Study, Build, Think
+     }
+     \`\`\`
+
+5. General Rules:
    - Think Step-by-Step.
    - Use Markdown.
 `;
